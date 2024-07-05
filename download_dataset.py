@@ -4,7 +4,8 @@ from urllib.error import HTTPError
 from contextlib import suppress
 import os
 import json
-from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from lh_steve.config import vpt_dataset_metadata
 
@@ -13,15 +14,14 @@ def download_file(url, dir, skip_if_exist=True):
     name = url.split('/')[-1]
     path = f'{dir}/{name}'
     if skip_if_exist and os.path.isfile(path):
-        print(f'Skipping download of existing file: {path}')
         return path
     name, _ = urllib.request.urlretrieve(url, path)
+    tqdm.write(f'Downloaded {name}')
     return name
 
 
-def download_pair(url_base, dir, i, total):
+def download_pair(url_base, dir):
     name = url_base.split('/')[-1]
-    print(f'Downloading {name} ({i + 1}/{total})')
     try:
         download_file(f'{url_base}.mp4', dir)
         download_file(f'{url_base}.jsonl', dir)
@@ -29,9 +29,7 @@ def download_pair(url_base, dir, i, total):
         with suppress(FileNotFoundError):
             os.remove(f'{dir}/{name}.mp4')
             os.remove(f'{dir}/{name}.jsonl')
-        print(f'Failed to download {name} ({i + 1}/{total})')
-    else:
-        print(f'Downloaded {name} ({i + 1}/{total})')
+        tqdm.write(f'Failed to download {name}')
 
 
 def main(args):
@@ -45,7 +43,6 @@ def main(args):
         subset_dir = f'{args.output_dir}/{subset}'
         os.makedirs(subset_dir, exist_ok=True)
 
-        print(f'Downloading index file for subset {subset}')
         idx_file = download_file(subset_info['index_url'], args.output_dir)
         with open(idx_file, 'r') as f:
             idx = json.load(f)
@@ -54,10 +51,14 @@ def main(args):
             if n_samples is None:
                 n_samples = max_len
             n_samples = min(n_samples, max_len)
-            with ThreadPoolExecutor(max_workers=args.n_workers) as executor:
-                for i in range(n_samples):
-                    url_base = idx['basedir'] + idx['relpaths'][i][:-4]  # trim '.mp4'
-                    executor.submit(download_pair, url_base, subset_dir, i, n_samples)
+            with tqdm(total=n_samples, unit='v', desc=subset) as pbar:
+                with ThreadPoolExecutor(max_workers=args.n_workers) as executor:
+                    futures = []
+                    for i in range(n_samples):
+                        url_base = idx['basedir'] + idx['relpaths'][i][:-4]  # trim '.mp4'
+                        futures.append(executor.submit(download_pair, url_base, subset_dir))
+                    for _ in as_completed(futures):
+                        pbar.update(1)
 
 
 if __name__ == '__main__':
