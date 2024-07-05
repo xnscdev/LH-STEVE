@@ -29,7 +29,7 @@ def load_mineclip(ckpt_path, device):
 def main(args):
     device = torch.device(args.device)
     mineclip = load_mineclip(args.ckpt_path, device)
-    clip_manager = VideoClipManager(args.data_dir, resolution=(160, 256), gamma=args.gamma)
+    clip_manager = VideoClipManager(args.data_dir, gamma=args.gamma)
     os.makedirs(args.output_dir, exist_ok=True)
     for subset in clip_manager.get_subsets():
         print(f'Processing {subset}')

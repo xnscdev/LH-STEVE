@@ -10,7 +10,7 @@ from contextlib import suppress
 
 
 class VideoClipManager:
-    def __init__(self, data_dir, resolution=(256, 256), n_frames=16, gamma=0.5):
+    def __init__(self, data_dir, resolution=(160, 256), n_frames=16, gamma=0.5):
         super().__init__()
         self.data_dir = data_dir
         h, w = resolution
