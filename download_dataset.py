@@ -32,7 +32,7 @@ def download_pair(url_base, dir):
         tqdm.write(f'Failed to download {name}')
 
 
-def main(args):
+def download_dataset(args):
     for subset in args.subsets:
         if subset not in vpt_dataset_metadata:
             raise ValueError(f'Invalid subset "{subset}"')
@@ -61,11 +61,15 @@ def main(args):
                         pbar.update(1)
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-o', '--output-dir', type=str, required=True)
     parser.add_argument('-s', '--subsets', type=str, nargs='+', required=True, help='Which subsets of data to download (see lh_steve/config.py)')
     parser.add_argument('-n', '--n-samples', type=int, help='Number of samples to download per subset (defaults to all)')
     parser.add_argument('-w', '--n-workers', type=int, default=4)
     args = parser.parse_args()
-    main(args)
+    download_dataset(args)
+
+
+if __name__ == '__main__':
+    main()
