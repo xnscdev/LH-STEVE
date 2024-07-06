@@ -23,7 +23,7 @@ def get_runs(subsets, data_dir):
         for fname in os.listdir(f'{data_dir}/{subset}'):
             match = pattern.match(fname)
             if match:
-                session = match.group(1)
+                session = f'{subset}/{match.group(1)}'
                 bisect.insort(runs[session], f'{subset}/{fname}')
     return runs.items()
 
@@ -66,7 +66,7 @@ def gen_clips(data_dir, segments, lut, n_frames=16):
         while True:
             yield torch.from_numpy(np.array(frames, dtype=np.float32))
             frames.append(next(it))
-            if i > 100:
+            if i > 10:
                 break
             i += 1
 
@@ -76,20 +76,18 @@ def embed_runs(mineclip, runs, args, queue):
     device = torch.device(args.device)
     lut = np.array([(i / 255.0) ** args.gamma for i in range(256)], dtype=np.float32)
     for session, segments in runs:
-        tqdm.write(session)
         it = gen_clips(args.data_dir, segments, lut)
         embeddings = []
         while True:
-            k = random.randint(args.k_min, args.k_max)
-            clips = tuple(islice(it, k))
+            clips = tuple(islice(it, args.batch_size))
             if not clips:
                 break
-            clips = torch.stack(clips, dim=0).to(device).split(args.batch_size)
-            clips = torch.cat(tuple(mineclip.encode_video(c) for c in clips), dim=0)
+            clips = torch.stack(clips, dim=0).to(device)
+            clips = mineclip.encode_video(clips)
             embeddings.append(clips)
+        embeddings = torch.cat(embeddings, dim=0)
         torch.save(embeddings, f'{args.output_dir}/{session}.pt')
-        tqdm.write(f'Saved {len(embeddings)} embeddings to {args.output_dir}/{session}.pt')
-        queue.put(None)
+        queue.put((len(embeddings), f'{args.output_dir}/{session}.pt'))
 
 
 def start_processes(args):
@@ -111,8 +109,9 @@ def start_processes(args):
         p = mp.Process(target=embed_runs, args=(mineclip, runs[i], args, queue))
         p.start()
         processes.append(p)
-    for i in trange(total_runs, unit='run'):
-        queue.get()
+    for _ in trange(total_runs, unit='run'):
+        size, path = queue.get()
+        tqdm.write(f'Saved {size} embeddings to {path}')
     for p in processes:
         p.join()
 
@@ -125,8 +124,6 @@ def main():
     parser.add_argument('-D', '--device', type=str, default='cuda')
     parser.add_argument('-b', '--batch-size', type=int, default=64)
     parser.add_argument('-p', '--n-processes', type=int, default=4)
-    parser.add_argument('--k-min', type=int, default=40, help='Minimum number of frames for goal')
-    parser.add_argument('--k-max', type=int, default=200, help='Maximum number of frames for goal')
     parser.add_argument('-g', '--gamma', type=float, default=0.5, help='Gamma correction value')
     args = parser.parse_args()
     start_processes(args)
