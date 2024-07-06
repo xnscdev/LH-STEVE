@@ -61,14 +61,10 @@ def gen_clips(data_dir, segments, lut, n_frames=16):
     it = gen_frames(data_dir, segments, lut)
     for _ in range(n_frames):
         frames.append(next(it))
-    i = 0
     with suppress(StopIteration):
         while True:
             yield torch.from_numpy(np.array(frames, dtype=np.float32))
             frames.append(next(it))
-            if i > 10:
-                break
-            i += 1
 
 
 @torch.no_grad()
@@ -78,19 +74,22 @@ def embed_runs(mineclip, runs, args, queue):
     for session, segments in runs:
         it = gen_clips(args.data_dir, segments, lut)
         embeddings = []
-        while True:
-            clips = tuple(islice(it, args.batch_size))
-            if not clips:
-                break
-            clips = torch.stack(clips, dim=0).to(device)
-            clips = mineclip.encode_video(clips)
-            embeddings.append(clips)
+        with tqdm(unit='clip') as pbar:
+            while True:
+                clips = tuple(islice(it, args.batch_size))
+                if not clips:
+                    break
+                clips = torch.stack(clips, dim=0).to(device)
+                clips = mineclip.encode_video(clips)
+                embeddings.append(clips)
+                pbar.update(args.batch_size)
         embeddings = torch.cat(embeddings, dim=0)
         torch.save(embeddings, f'{args.output_dir}/{session}.pt')
         queue.put((len(embeddings), f'{args.output_dir}/{session}.pt'))
 
 
 def start_processes(args):
+    mp.set_start_method('spawn')
     device = torch.device(args.device)
     mineclip = load_mineclip(args.ckpt_path, device)
     mineclip.share_memory()
