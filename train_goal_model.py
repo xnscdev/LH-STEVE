@@ -1,2 +1,0 @@
-from lh_steve.models import ShortTermGoalCVAE
-from lh_steve.datasets import VideoClipGoalDataModule
