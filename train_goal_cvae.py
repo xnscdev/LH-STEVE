@@ -1,6 +1,7 @@
 import argparse
 import lightning as L
 from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.callbacks import ModelCheckpoint
 
 from lh_steve.models import ShortTermGoalCVAE
 from lh_steve.datasets import VideoClipGoalDataModule
@@ -17,8 +18,17 @@ def train(args):
         gamma=args.gamma,
     )
     logger = TensorBoardLogger("train_logs", name="goal_cvae")
+    callbacks = None
+    if args.ckpt_dir is not None:
+        checkpoints = ModelCheckpoint(
+            args.ckpt_dir, every_n_train_steps=args.ckpt_interval
+        )
+        callbacks = [checkpoints]
     trainer = L.Trainer(
-        default_root_dir="checkpoints", max_epochs=args.epochs, logger=logger
+        default_root_dir="checkpoints",
+        max_epochs=args.epochs,
+        logger=logger,
+        callbacks=callbacks,
     )
     if args.ckpt_path is None:
         model = ShortTermGoalCVAE(
@@ -53,6 +63,8 @@ def main():
     parser.add_argument("-b", "--batch-size", type=int, default=64)
     parser.add_argument("-e", "--epochs", type=int, default=1)
     parser.add_argument("-w", "--n-workers", type=int, default=8)
+    parser.add_argument("--ckpt-dir", type=str)
+    parser.add_argument("--ckpt-interval", type=int, default=100)
     parser.add_argument("--clip-dim", type=int, default=512)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--latent-dim", type=int, default=64)
