@@ -76,6 +76,7 @@ class ShortTermGoalCVAE(L.LightningModule):
         self.mineclip.freeze()
         self.encoder = ShortTermGoalEncoder(clip_dim, hidden_dim, latent_dim)
         self.decoder = ShortTermGoalDecoder(latent_dim, hidden_dim, clip_dim)
+        self.strict_loading = False
 
     def forward(self, x, l):
         x = self.mineclip(x)
@@ -105,6 +106,9 @@ class ShortTermGoalCVAE(L.LightningModule):
             lr=self.hparams.lr,
         )
         return optimizer
+
+    def state_dict(self):
+        return {k: v for k, v in super().state_dict().items() if "mineclip" not in k}
 
     def calc_loss(self, x, y, mean, log_var):
         recon_loss = F.mse_loss(y, x, reduction="sum")

@@ -118,7 +118,15 @@ class VideoClipGoalDataModule(L.LightningDataModule):
         self.test_runs = None
 
     def setup(self, stage):
-        self.init_runs_list()
+        if self.train_runs is not None and self.test_runs is not None:
+            return
+        self.train_runs, self.test_runs = build_runs_list(
+            self.hparams.data_dir,
+            self.trainer.world_size,
+            min_video_len=self.hparams.min_video_len,
+            split=self.hparams.split,
+        )
+
         if stage == "fit":
             self.train_dataset = VideoClipGoalDataset(
                 self.hparams.data_dir,
@@ -152,46 +160,6 @@ class VideoClipGoalDataModule(L.LightningDataModule):
             pin_memory=True,
         )
 
-    def init_runs_list(self):
-        if self.train_runs is not None and self.test_runs is not None:
-            return
-        pattern = re.compile(r"^(.*-[0-9a-f]{12})-.*\.mp4$")
-        runs = defaultdict(list)
-        for subset in get_subsets(self.hparams.data_dir):
-            for fname in os.listdir(f"{self.hparams.data_dir}/{subset}"):
-                match = pattern.match(fname)
-                if match:
-                    session = match.group(1)
-                    bisect.insort(runs[session], f"{subset}/{fname}")
-        runs_list = []
-        for segments in runs.values():
-            new_segments = []
-            length = 0
-            for segment in segments:
-                video = cv2.VideoCapture(f"{self.hparams.data_dir}/{segment}")
-                if video.isOpened():
-                    video_len = video.get(cv2.CAP_PROP_FRAME_COUNT)
-                    if video_len >= self.hparams.min_video_len:
-                        new_segments.append(segment)
-                        length += video_len
-                    else:
-                        print(
-                            f"Skipping video {self.hparams.data_dir}/{segment} as it has less than {self.hparams.min_video_len} frames",
-                            file=sys.stderr,
-                        )
-                else:
-                    print(
-                        f"Error opening {self.hparams.data_dir}/{segment}",
-                        file=sys.stderr,
-                    )
-                video.release()
-            if new_segments:
-                runs_list.append((new_segments, int(length)))
-        runs_list.sort(key=lambda x: x[1], reverse=True)
-        n_test_runs = math.ceil(self.hparams.split * len(runs_list))
-        self.train_runs = split_runs(runs_list[n_test_runs:], self.trainer.world_size)
-        self.test_runs = split_runs(runs_list[:n_test_runs], self.trainer.world_size)
-
 
 def get_subsets(data_dir):
     return list(
@@ -208,3 +176,43 @@ def split_runs(runs, n_splits):
         splits[i].append(run)
         sizes[i] += length
     return splits
+
+
+def build_runs_list(data_dir, world_size, min_video_len=128, split=0.1):
+    pattern = re.compile(r"^(.*-[0-9a-f]{12})-.*\.mp4$")
+    runs = defaultdict(list)
+    for subset in get_subsets(data_dir):
+        for fname in os.listdir(f"{data_dir}/{subset}"):
+            match = pattern.match(fname)
+            if match:
+                session = match.group(1)
+                bisect.insort(runs[session], f"{subset}/{fname}")
+    runs_list = []
+    for segments in runs.values():
+        new_segments = []
+        length = 0
+        for segment in segments:
+            video = cv2.VideoCapture(f"{data_dir}/{segment}")
+            if video.isOpened():
+                video_len = video.get(cv2.CAP_PROP_FRAME_COUNT)
+                if video_len >= min_video_len:
+                    new_segments.append(segment)
+                    length += video_len
+                else:
+                    print(
+                        f"Skipping video {data_dir}/{segment} as it has less than {min_video_len} frames",
+                        file=sys.stderr,
+                    )
+            else:
+                print(
+                    f"Error opening {data_dir}/{segment}",
+                    file=sys.stderr,
+                )
+            video.release()
+        if new_segments:
+            runs_list.append((new_segments, int(length)))
+    runs_list.sort(key=lambda x: x[1], reverse=True)
+    n_test_runs = math.ceil(split * len(runs_list))
+    train_runs = split_runs(runs_list[n_test_runs:], world_size)
+    test_runs = split_runs(runs_list[:n_test_runs], world_size)
+    return train_runs, test_runs
