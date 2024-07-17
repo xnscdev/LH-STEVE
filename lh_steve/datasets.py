@@ -5,6 +5,7 @@ import cv2
 import math
 import random
 import bisect
+import itertools
 import numpy as np
 import lightning as L
 from torch.utils.data import IterableDataset, DataLoader, get_worker_info
@@ -43,19 +44,26 @@ class VideoClipGoalDataset(IterableDataset):
             idx = 0
         else:
             idx = worker_info.id
-        for segments, _ in self.runs[idx]:
-            frames = deque(maxlen=self.n_frames)
-            final_clip = self.get_final_clip(segments)
-            it = self.gen_frames(segments)
-            for _ in range(self.n_frames):
-                frames.append(next(it))
-            with suppress(StopIteration):
-                while True:
-                    yield np.array(frames, dtype=np.float32), final_clip
-                    frames.append(next(it))
+        yield from self.iter_runs(self.runs[idx])
 
     def __len__(self):
         return self.length
+
+    def iter_runs(self, runs):
+        for segments, _ in runs:
+            final_clip = self.get_final_clip(segments)
+            for clip in self.gen_clips(segments):
+                yield clip, final_clip
+
+    def gen_clips(self, segments):
+        frames = deque(maxlen=self.n_frames)
+        it = self.gen_frames(segments)
+        for _ in range(self.n_frames):
+            frames.append(next(it))
+        with suppress(StopIteration):
+            while True:
+                yield np.array(frames, dtype=np.float32)
+                frames.append(next(it))
 
     def gen_frames(self, segments):
         videos = []
@@ -118,30 +126,21 @@ class VideoClipGoalDataModule(L.LightningDataModule):
         self.test_runs = None
 
     def setup(self, stage):
-        if self.train_runs is not None and self.test_runs is not None:
-            return
-        self.train_runs, self.test_runs = build_runs_list(
-            self.hparams.data_dir,
-            self.trainer.world_size,
-            min_video_len=self.hparams.min_video_len,
-            split=self.hparams.split,
-        )
+        if self.train_runs is None or self.test_runs is None:
+            self.train_runs, self.test_runs = build_runs_list(
+                self.hparams.data_dir,
+                self.trainer.world_size,
+                min_video_len=self.hparams.min_video_len,
+                split=self.hparams.split,
+            )
 
         if stage == "fit":
-            self.train_dataset = VideoClipGoalDataset(
-                self.hparams.data_dir,
-                self.train_runs[self.trainer.global_rank],
-                self.hparams.n_workers,
-                goal_bound=self.hparams.goal_bound,
-                gamma=self.hparams.gamma,
+            self.train_dataset = self.build_dataset(
+                self.train_runs[self.trainer.global_rank]
             )
         elif stage == "test":
-            self.test_dataset = VideoClipGoalDataset(
-                self.hparams.data_dir,
-                self.test_runs[self.trainer.global_rank],
-                self.hparams.n_workers,
-                goal_bound=self.hparams.goal_bound,
-                gamma=self.hparams.gamma,
+            self.test_dataset = self.build_dataset(
+                self.test_runs[self.trainer.global_rank]
             )
 
     def train_dataloader(self):
@@ -149,6 +148,7 @@ class VideoClipGoalDataModule(L.LightningDataModule):
             self.train_dataset,
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.n_workers,
+            drop_last=True,
             pin_memory=True,
         )
 
@@ -157,7 +157,92 @@ class VideoClipGoalDataModule(L.LightningDataModule):
             self.test_dataset,
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.n_workers,
+            drop_last=True,
             pin_memory=True,
+        )
+
+    def build_dataset(self, runs):
+        return VideoClipGoalDataset(
+            self.hparams.data_dir,
+            runs,
+            self.hparams.n_workers,
+            goal_bound=self.hparams.goal_bound,
+            gamma=self.hparams.gamma,
+        )
+
+
+class ShortTermGoalDataset(VideoClipGoalDataset):
+    def __init__(
+        self,
+        data_dir,
+        runs,
+        n_workers,
+        k_min,
+        k_max,
+        resolution=(160, 256),
+        goal_bound=128,
+        n_frames=16,
+        gamma=0.5,
+    ):
+        super().__init__(
+            data_dir,
+            runs,
+            n_workers,
+            resolution=resolution,
+            goal_bound=goal_bound,
+            n_frames=n_frames,
+            gamma=gamma,
+        )
+        self.k_min = k_min
+        self.k_max = k_max
+
+    def iter_runs(self, runs):
+        for segments, _ in runs:
+            final_clip = self.get_final_clip(segments)
+            it = self.gen_clips(segments)
+            while True:
+                k = random.randint(self.k_min, self.k_max)
+                clips = list(itertools.islice(it, k))
+                if not clips:
+                    break
+                goal = clips[-1]
+                for clip in clips:
+                    yield clip, final_clip, goal
+
+
+class ShortTermGoalDataModule(VideoClipGoalDataModule):
+    def __init__(
+        self,
+        data_dir,
+        batch_size,
+        n_workers,
+        split=0.1,
+        goal_bound=128,
+        min_video_len=128,
+        gamma=0.5,
+        k_min=40,
+        k_max=200,
+    ):
+        super().__init__(
+            data_dir,
+            batch_size,
+            n_workers,
+            split=split,
+            goal_bound=goal_bound,
+            min_video_len=min_video_len,
+            gamma=gamma,
+        )
+        self.save_hyperparameters()
+
+    def build_dataset(self, runs):
+        return ShortTermGoalDataset(
+            self.hparams.data_dir,
+            runs,
+            self.hparams.n_workers,
+            k_min=self.hparams.k_min,
+            k_max=self.hparams.k_max,
+            goal_bound=self.hparams.goal_bound,
+            gamma=self.hparams.gamma,
         )
 
 

@@ -3,12 +3,12 @@ import lightning as L
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 
-from lh_steve.models import ShortTermGoalCVAE
-from lh_steve.datasets import VideoClipGoalDataModule
+from lh_steve.models import ShortTermGoalModel
+from lh_steve.datasets import ShortTermGoalDataModule
 
 
 def train(args):
-    datamodule = VideoClipGoalDataModule(
+    datamodule = ShortTermGoalDataModule(
         args.data_dir,
         batch_size=args.batch_size,
         n_workers=args.n_workers,
@@ -17,7 +17,7 @@ def train(args):
         min_video_len=args.min_video_len,
         gamma=args.gamma,
     )
-    logger = TensorBoardLogger("train_logs", name="goal_cvae")
+    logger = TensorBoardLogger("train_logs", name="goal_model")
     callbacks = None
     if args.ckpt_dir is not None:
         checkpoints = ModelCheckpoint(
@@ -31,30 +31,31 @@ def train(args):
         callbacks=callbacks,
     )
     if args.ckpt_path is None:
-        model = ShortTermGoalCVAE(
-            args.mineclip_path,
-            clip_dim=args.clip_dim,
-            hidden_dim=args.hidden_dim,
+        model = ShortTermGoalModel(
+            args.encoder_path,
             latent_dim=args.latent_dim,
+            hidden_dim=args.hidden_dim,
+            n_layers=args.n_layers,
             lr=args.lr,
         )
     else:
-        model = ShortTermGoalCVAE.load_from_checkpoint(args.ckpt_path)
+        model = ShortTermGoalModel.load_from_checkpoint(args.ckpt_path)
     trainer.fit(model, datamodule=datamodule)
     trainer.test(model, datamodule=datamodule)
-    trainer.save_checkpoint("goal_cvae.ckpt")
+    trainer.save_checkpoint("goal_model.ckpt")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--data-dir", type=str, required=True)
     parser.add_argument(
-        "-m",
-        "--mineclip-path",
+        "-p",
+        "--encoder-path",
         type=str,
         required=True,
-        help="MineCLIP checkpoint path",
+        help="Short term goal CVAE checkpoint path",
     )
+    parser.add_argument("-l", "--n-layers", type=int, default=4)
     parser.add_argument(
         "-c",
         "--ckpt-path",
@@ -67,9 +68,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--ckpt-dir", type=str)
     parser.add_argument("--ckpt-interval", type=int, default=100)
-    parser.add_argument("--clip-dim", type=int, default=512)
-    parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--latent-dim", type=int, default=64)
+    parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument(
         "--split",
         type=float,

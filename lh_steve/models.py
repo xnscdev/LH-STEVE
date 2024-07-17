@@ -1,4 +1,4 @@
-import itertools
+import warnings
 import lightning as L
 import torch
 import torch.nn as nn
@@ -101,14 +101,13 @@ class ShortTermGoalCVAE(L.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        optimizer = Adam(
-            itertools.chain(self.encoder.parameters(), self.decoder.parameters()),
-            lr=self.hparams.lr,
-        )
+        optimizer = Adam(self.parameters(), lr=self.hparams.lr)
         return optimizer
 
-    def state_dict(self):
-        return {k: v for k, v in super().state_dict().items() if "mineclip" not in k}
+    def state_dict(self, **kwargs):
+        return {
+            k: v for k, v in super().state_dict(**kwargs).items() if "mineclip" not in k
+        }
 
     def calc_loss(self, x, y, mean, log_var):
         recon_loss = F.mse_loss(y, x, reduction="sum")
@@ -120,3 +119,69 @@ class ShortTermGoalCVAE(L.LightningModule):
         std = torch.exp(0.5 * log_var)
         eps = torch.randn_like(std)
         return mean + eps * std
+
+    def encode(self, x, l):
+        x = self.mineclip(x)
+        l = self.mineclip(l)
+        mean, log_var = self.encoder(x, l)
+        z = self.reparameterize(mean, log_var)
+        return z
+
+
+class ShortTermGoalModel(L.LightningModule):
+    def __init__(self, encoder_path, latent_dim, hidden_dim, n_layers, lr=1e-4):
+        super().__init__()
+        self.save_hyperparameters()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.encoder = ShortTermGoalCVAE.load_from_checkpoint(encoder_path)
+        self.encoder.freeze()
+        self.fc1 = nn.Linear(latent_dim, hidden_dim)
+        self.layers = nn.ModuleList()
+        for _ in range(n_layers):
+            self.layers.append(
+                nn.Sequential(
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.BatchNorm1d(hidden_dim),
+                    nn.LeakyReLU(0.2, inplace=True),
+                    nn.Linear(hidden_dim, hidden_dim),
+                    nn.BatchNorm1d(hidden_dim),
+                    nn.LeakyReLU(0.2, inplace=True),
+                )
+            )
+        self.fc2 = nn.Linear(hidden_dim, latent_dim)
+        self.strict_loading = False
+
+    def forward(self, x):
+        x = F.leaky_relu(self.fc1(x), 0.2)
+        for layer in self.layers:
+            x = x + layer(x)
+        x = self.fc2(x)
+        return x
+
+    def training_step(self, batch, batch_idx):
+        x, l, y = batch
+        x = self.encoder.encode(x, l)
+        y = self.encoder.encode(y, l)
+        y_hat = self(x)
+        loss = F.mse_loss(y_hat, y)
+        self.log("train_loss", loss, on_step=True, on_epoch=False, prog_bar=True)
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        x, l, y = batch
+        x = self.encoder.encode(x, l)
+        y = self.encoder.encode(y, l)
+        y_hat = self(x)
+        loss = F.mse_loss(y_hat, y)
+        self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = Adam(self.parameters(), lr=self.hparams.lr)
+        return optimizer
+
+    def state_dict(self, **kwargs):
+        return {
+            k: v for k, v in super().state_dict(**kwargs).items() if "encoder" not in k
+        }
